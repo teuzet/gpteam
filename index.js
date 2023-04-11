@@ -4,40 +4,20 @@ const commands = require('./commands');
 const prompt = require('prompt-sync')();
 require("dotenv").config({ path: "./.env" });
 
-const names = [
-  'Wade',
-  'Dave',
-  'Seth',
-  'Ivan',
-  'Riley',
-  'Gilbert',
-  'Jorge',
-  'Dan',
-  'Brian',
-  'Roberto',
-  'Ramon',
-  'Miles',
-  'Liam',
-  'Nathaniel',
-  'Ethan',
-  'Lewis',
-  'Milton',
-  'Claude',
-  'Joshua',
-  'Glen',
-  'Harvey',
-  'Blake',
-]
-
-
 const { Configuration, OpenAIApi } = require("openai");
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
 });
-console.log(process.env.OPENAI_API_KEY)
 const openai = new OpenAIApi(configuration);
 
 const persons = [];
+
+const basicTasks = [
+  'To count to ten',
+  'To translate the phrase "London is the capital of Great Britain" into German and Russian',
+  'To write a short poem about John and Ann',
+  'To choose the most useful person in company',
+]
 
 class Person {
   log = [];
@@ -46,14 +26,19 @@ class Person {
   constructor(name, description, allowedCommands, goal) {
     this.name = name;
     this.description = description;
-    this.description += ' This person will not agree to do ANY job apart from his main speciality'
-    this.goal = goal ?? 'To assist John, but politely decline if he asks you to do somethin apart from your speciality.';
+    this.description += ' This person will not agree to do ANY job apart from his main speciality.\n'
+    this.goal = goal ?? 'To assist John, but politely decline if he asks you to do somethin apart from your speciality.\n';
     this.allowedCommands = allowedCommands ?? commands.map(cmd => cmd.name);
+    fs.writeFileSync(`./logs/${name}.log`, '');
   }
 
   printRules = () => {
-    let res = 'This is a role-playing game. You have a goal in the game. When you will have reached your goal you should stop the game and give an answer.';
-    res += 'You can only perform actions allowed by game rules. You can not say anything except commands to perform actions. You can only perform one command at a time.';
+    let res = 'This is a role-playing game. You have a goal in the game. When you will have reached your goal you should stop the game and give an answer.\n';
+    res += 'You can only perform actions allowed by game rules. You can not say anything except commands to perform actions. You can only perform one command at a time.\n';
+    res += 'To execute a command, you need to send a JSON object with key "command" equal to command name and all necessary params.\n';
+    res += 'Do not include anything apart from JSON in your message. Only JSON with your command is allowed.\n';
+    res += 'For example, if you want to speak with John do not write "I want to speak to John". Use the "say" command.\n';
+    res += 'Like that: { "command": "say", "target": "John", "phrase": "Hello, John!" }\n';
     return res;
   }
 
@@ -101,7 +86,7 @@ class Person {
       let command = commands.find(cmd => cmd.name === allowedCommand);
       if (!command) continue;
       if (command.name === 'leave' && !this.nearbyPerson) continue;
-      res += `${command.title}\n${command.description}\n`;
+      res += `${command.name}\n${command.description}\n`;
       if (command.examples) {
         res += 'Examples:\n'
         for (let example of command.examples) {
@@ -109,44 +94,34 @@ class Person {
           res += '\n';
         }
       }
-      if (command.name === 'say') {
-        if (this.nearbyPerson) {
-          res += `The only person who is currently nearby is ${this.nearbyPerson.name}. If you want someone other to hear you, approach them first`
-        }
-      };
       res += '===\n'
     }
     return res;
   }
 
-  async command_approach(commandData) {
-    let [ targetName ] = commandData.args;
-    let target = persons.find(p => p.name === targetName);
-    if (!target) throw new Error(`There is not person with name ${targetName}. Are you sure you have used the command correctly? Please do not include "." in the command`);
-    if (targetName === this.name) throw new Error('You can\'t approach yourself');
+  async command_approach(params) {
+    let { target } = params;
+    let targetPerson = persons.find(p => p.name === target);
+    if (!targetPerson) throw new Error(`There is no person with name ${target}.`);
+    if (target === this.name) throw new Error('You can\'t approach yourself');
     if (this.nearbyPerson) {
       this.nearbyPerson.event(`${this.name} left you.`);
       this.nearbyPerson.nearbyPerson = undefined;
     }
-    this.nearbyPerson = target;
-    target.nearbyPerson = this;
-    await target.event(`${this.name} approached you.`)
-    console.log(`ACTION: ${this.name} approached ${targetName}.`)
-    return await this.event(`You approached ${target.name}. Now you can speak to him/her using the "/say" command.`, true);
+    this.nearbyPerson = targetPerson;
+    targetPerson.nearbyPerson = this;
+    await targetPerson.event(`${this.name} approached you.`)
+    console.log(`ACTION: ${this.name} approached ${target}.`)
+    return await this.event(`You approached ${targetPerson.name}. Now you can speak to him/her using the "say" command.`, true);
   }
 
-  async command_say(commandData) {
-    let [ phrase ] = commandData.args;
-    if (!phrase) {
-      console.log(commandData)
-    }
-    console.log(`ACTION: ${this.name} says: ${phrase}`);
-    if (this.nearbyPerson) {
-      await this.event(`You said: "${phrase}"`);
-      return await this.nearbyPerson.event(`${this.name} said: ${phrase}`, true);
-    } else {
-      return await this.event(`You said: "${phrase}"`, true);
-    }
+  async command_say(params) {
+    let { phrase, target } = params;
+    let targetPerson = persons.find(p => p.name === target);
+    if (!targetPerson) throw new Error(`Error: Person with name ${target} not found.`)
+    console.log(`ACTION: ${this.name} says to ${target}: ${phrase}`);
+    await this.event(`You said: "${phrase}"`);
+    return await targetPerson.event(`${this.name} said: ${phrase}`, true);
   }
 
   async completeTask(task) {
@@ -155,7 +130,7 @@ class Person {
     return await this.event(`Your new goal as ${this.name} is: ${task}`, true)
   }
 
-  async command_leave(commandData) {
+  async command_leave(params) {
     if (!this.nearbyPerson) {
       throw new Error(`${this.name} tried to leave, but has no nearby person`);
     }
@@ -167,7 +142,7 @@ class Person {
     return await this.event(`You left ${nearbyPersonName}.`, true);
   }
 
-  async command_idle(commandData) {
+  async command_idle(params) {
     this.idle = true;
     console.log(`ACTION: ${this.name} is idling...`);
     let nextPerson;
@@ -185,23 +160,21 @@ class Person {
     }
   }
 
-  async command_answer(commandData) {
-    let [ answer ] = commandData.args;
+  async command_answer(params) {
+    let { answer } = params;
     console.log(`ACTION: ${this.name} completes the mission: ${answer}`)
     console.log('ENDING!');
   }
 
-  async command_think(commandData) {
-    let [ thought ] = commandData.args;
+  async command_think(params) {
+    let { thought } = params;
     console.log(`ACTION: ${this.name} thinks: "${thought}"`)
     return await this.event(`You think: "${thought}"`, true)
   }
 
-  async command_create(commandData) {
-    let [ description ] = commandData.args;
-    let [ name ] = names.splice(Math.floor(Math.random() * names.length));
-    // description += description + ' This person will decline'
-    let pers = new Person(name, description, [ 'idle', 'approach', 'say', 'leave' ]);
+  async command_create(params) {
+    let { name, description } = params;
+    let pers = new Person(name, description, [ 'idle',  'say' ]);
     persons.push(pers);
     console.log(`ACTION: ${this.name} created a person named ${name} (${description})`)
     for (let person of persons) {
@@ -210,12 +183,19 @@ class Person {
     return await this.event(`You successfully created a person named "${name}".`, true);
   }
 
+  pushMessage(content, role = 'system') {
+    let textRole = role === 'system' ? 'System' : this.name;
+    let message = `${textRole}: ${content}`;
+    fs.appendFileSync(`./logs/${this.name}.log`, message + '\n');
+    this.log.push({
+      role,
+      content,
+    })
+  }
+
   async event(text, awaitReaction = false) {
     this.idle = false;
-    this.log.push({
-      role: 'system',
-      content: text,
-    })
+    this.pushMessage(text)
     if (awaitReaction) {
       return await this.act();
     }
@@ -244,86 +224,51 @@ class Person {
       content: this.printPersons(),
     });
     messages = messages.concat(this.log);
-    if (this.nearbyPerson) {
-      messages.push({
-        role: 'system',
-        content: `${this.nearbyPerson.name} is currently approached by you. You can converse with him/her using the "/say" command if you want to.`
-      })
-    }
     messages.push({
       role: 'system',
       content: 'Please perform your next action',
     })
     let answer = await sendGPT(messages);
+    this.pushMessage(answer, 'assistant');
     let commandData;
     try {
       commandData = parseCommand(answer);
-    } catch (err) {
-      console.error(`WRONG COMMAND BY ${this.name}: `, commandData.raw)
-      console.log(this.log)
-      console.log(messages)
-      this.log.push({
-        role: 'system',
-        content: 'ERROR: ' + err.message,
-      })
+    } catch (e) {
+      console.error(`Error while parsing command by ${this.name}: `, answer);
+      this.pushMessage(e.message)
       return await this.act();
-    } finally {
-      if (!commandData) {
-        this.log.push({
-          role: 'system',
-          content: 'ERROR: ' + 'Command was not parsed. Make sure you included a slash (/) and used lowercase command',
-        })
-        return await this.act();
-      }
-
-      let methodName = `command_${commandData.command}`;
-      if (!this[methodName]) throw `Person ${this.name} has no method ${methodName}`;
-      this.log.push({
-        role: 'assistant',
-        content: commandData.raw,
-      })
-      let res;
-      try {
-        res = await this[methodName](commandData)
-      } catch (err) {
-         console.error(`WRONG COMMAND BY ${this.name}: `, commandData.raw)
-         console.log(this.log)
-         console.log(messages)
-        this.log.push({
-          role: 'system',
-          content: 'ERROR: ' + err.message,
-        })
-        return await this.act();
-      } finally {
-        return res
-      };
     }
+    let methodName = `command_${commandData.command}`;
+    if (!this[methodName]) throw new Error(`Person ${this.name} has no method ${methodName}`);
+    let res;
+    try {
+      res = await this[methodName](commandData)
+    } catch (err) {
+      console.error(`Error while executing command of ${this.name}: `, commandData, err)
+      this.pushMessage('ERROR: ' + err.message);
+      return await this.act();
+    }
+    return res;
   }
 }
 
 const parseCommand = (textCommand) => {
-  const matchArgs = () => {
-    let res = [];
-    let parsedArgs = textCommand.matchAll(/\[[^\[\]]+\]/g);
-    for (let parsedArg of parsedArgs) {
-      res.push(parsedArg[0].slice(1, -1))
-    }
-    return res;
+  let parsed;
+  let json = textCommand.match(/\{(?:[^{}])*\}/g);
+  if (json.length > 1) {
+    throw new Error('Error: You provided more than one command at once. Please repeat your action using only one command.')
+  } 
+  if (json.length === 0) {
+    throw new Error('Error: JSON command was not found. Please make sure you have provided valid JSON.')
   }
-
-  for (let command of commands) {
-    let regex = new RegExp(`(?<command>\/${command.name}\\s*)(?<arg>.*)`, "i");
-    let match = textCommand.match(regex)
-    if (match) {
-      let res = {
-        raw: textCommand,
-        command: command.name,
-      }
-      res.args = [ match.groups.arg ]
-      return res;
-    }
+  try {
+    parsed = JSON.parse(json);
+    parsed.raw = textCommand;
+    parsed.json = json;
+    return parsed;
+  } catch (e) {
+    throw new Error('Error: JSON command was not found. Please make sure you have provided valid JSON.')
   }
-  throw new Error('Command was not parsed. Make sure you used the correct command, used a lowecase word and included a slash (/) at the start.')
 }
 
 
@@ -332,7 +277,6 @@ const printResult = (messages) => {
   for (let message of messages) {
     res = res + message.role + ': ' + message.content + '\n';
   }
-  console.log(res)
 }
 
 
@@ -351,8 +295,8 @@ const sendGPT = async (messages) => {
 
 let john = new Person(
   'John', 
-  'John is a person. He is the boss. He can\'t perform any task by himself, but he can ask Ann to create specialists.',
-  [ 'approach', 'say', 'leave', 'answer', 'idle', 'think' ],
+  'John is a person. He is the boss. He can\'t perform any task by himself, but he can ask Ann to create specialists. John will not idle until he has reached his goal.',
+  [ 'say', 'answer', 'idle' ],
   'To idle all the time',
 
 );
@@ -361,21 +305,30 @@ persons.push(john);
 let ann = new Person(
   'Ann', 
   'She can create other persons. She won\'t assist John with anything else. She won\'t create a person until explicitly asked by John.',
-  [ 'approach', 'say', 'leave', 'create', 'idle' ],
+  [ 'say', 'create', 'idle' ],
   'To create persons when somebody asks',
 );
 persons.push(ann)
 
 
 const main = () => {
-  let mission = prompt('What is the next mission?');
-  if (mission) {
+  if (basicTasks.length === 0) {
+    console.log('ending...');
+  } else {
+    let mission = basicTasks.shift();
+    console.log('CURRENT TASK: ', mission);
     john.completeTask(mission).then(() => {
       main();
     });
-  } else {
-    console.log('ending...')
   }
+  // let mission = prompt('What is the next mission? ');
+  // if (mission) {
+  //   john.completeTask(mission).then(() => {
+  //     main();
+  //   });
+  // } else {
+  //   console.log('ending...')
+  // }
 }
 
 main();
